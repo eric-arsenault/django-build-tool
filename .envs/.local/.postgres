@@ -1,0 +1,21 @@
+# PostgreSQL
+# ------------------------------------------------------------------------------
+POSTGRES_HOST=postgres
+POSTGRES_PORT=5432
+POSTGRES_DB=analytics
+POSTGRES_USER=dbtuser
+
+
+# Postgrest
+# ------------------------------------------------------------------------------
+PGRST_DB_URI=postgres://dbtuser:password@postgres:5432/analytics
+PGRST_DB_ANON_ROLE=web_anon
+PGRST_DB_SCHEMAS=public
+PGRST_OPENAPI_MODE=ignore-privileges
+PGRST_OPENAPI_SERVER_PROXY_URI=http://127.0.0.1:3000
+#PGRST_JWT_SECRET=pgrst_jwt_secret
+
+
+# ------------------------------------------------------------------------------
+# Swagger
+API_URL=http://127.0.0.1:3000/

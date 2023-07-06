@@ -1,0 +1,122 @@
+version: '3'
+
+volumes:
+  dbt_scheduler_data:
+  postgres_data: { }
+  postgres_data_backups: { }
+
+services:
+  password-generator:
+    image: alpine
+    volumes:
+      - ./passwords:/passwords
+    command:
+      - /bin/sh
+      - -c
+      - >
+        if [ ! -f /passwords/password.txt ]; then
+          echo "dbt_login=dbtuser" > /passwords/password.txt;
+          echo "dbt_password=$$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 16)" >> /passwords/password.txt;
+          echo "postgres_user=dbtuser" >> /passwords/password.txt;
+          echo "postgres_password=$$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 24)" >> /passwords/password.txt;
+        fi;
+        echo "passwords generated";
+  
+
+  django: &django
+    build:
+      context: .
+      dockerfile: ./compose/local/django/Dockerfile
+    image: analytics_django
+    container_name: analytics_django
+    depends_on:
+      - password-generator
+      - postgres
+      - redis
+    volumes:
+      - dbt_scheduler_data:/root/.dbt
+      - ./passwords:/passwords
+    env_file:
+      - ./.envs/.local/.django
+      - ./.envs/.local/.postgres
+    ports:
+      - "8000:8000"
+    restart: "no"
+    command: /start
+
+  postgres:
+    build:
+      context: .
+      dockerfile: ./compose/local/postgres/Dockerfile
+    image: analytics_postgres
+    container_name: analytics_postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - postgres_data_backups:/var/lib/postgresql/backups
+      - ./passwords:/passwords
+    depends_on:
+      - password-generator
+    env_file:
+      - ./.envs/.local/.postgres
+    restart: "no"
+    ports:
+      - "5432:5432"
+
+#  pgrst:
+#    image: postgrest/postgrest
+#    container_name: analytics_postgrest
+#    ports:
+#      - "3000:3000"
+#    env_file:
+#      - ./.envs/.local/.postgres
+#    depends_on:
+#      - postgres
+
+  swagger:
+    image: swaggerapi/swagger-ui
+    container_name: analytics_swagger
+    restart: "no"
+    ports:
+      - "8080:8080"
+    expose:
+      - "8080"
+    env_file:
+      - ./.envs/.local/.postgres
+
+  redis:
+    image: redis:6
+    restart: "no"
+    container_name: analytics_redis
+
+  celeryworker:
+    <<: *django
+    image: analytics_celeryworker
+    container_name: analytics_celeryworker
+    depends_on:
+      - password-generator
+      - django
+      - redis
+      - postgres
+    restart: "no"
+    ports: [ ]
+    command: /start-celeryworker
+    volumes:
+      - dbt_scheduler_data:/root/.dbt
+      - ./passwords:/passwords
+
+  celerybeat:
+    <<: *django
+    image: analytics_celerybeat
+    container_name: analytics_celerybeat
+    restart: "no"
+    depends_on:
+      - password-generator
+      - django
+      - redis
+      - postgres
+    ports: [ ]
+    volumes:
+      - dbt_scheduler_data:/root/.dbt
+      - ./passwords:/passwords
+    command: /start-celerybeat
+

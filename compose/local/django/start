@@ -1,0 +1,92 @@
+#!/bin/bash
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+set_database_url() {
+  postgres_password=$(grep 'postgres_password' /passwords/password.txt | cut -d '=' -f 2)
+
+  # Set DATABASE_URL environment variable
+  database_url="postgres://dbtuser:$postgres_password@postgres:5432/analytics"
+  export DATABASE_URL="$database_url"
+
+}
+#  create superuser
+create_superuser() {
+  # Set predefined values for the superuser credentials
+  username=$(grep 'dbt_login' /passwords/password.txt | cut -d '=' -f 2)
+  email="dbtuser@example.com"
+  # Read password from /passwords/password.txt
+  password=$(grep 'dbt_password' /passwords/password.txt | cut -d '=' -f 2)
+
+  # Check if the superuser already exists
+  if python manage.py shell -c "from django.contrib.auth import get_user_model; User = get_user_model(); exists = User.objects.filter(username='$username').exists(); exit(0 if exists else 1)"; then
+    # Superuser exists, skip creation
+    echo "Superuser '$username' already exists. Skipping creation."
+  else
+    # Run Django management command to create the superuser
+    python manage.py createsuperuser --noinput --username "$username" --email "$email"
+    # Set the password for the superuser
+    echo "from django.contrib.auth import get_user_model; User = get_user_model(); user = User.objects.get(username='$username'); user.set_password('$password'); user.save()" | python manage.py shell
+    # create token for superuser
+    python manage.py drf_create_token "$username"
+
+    # Display the created superuser information
+    echo "Superuser created:"
+    echo "Username: $username"
+    echo "Email: $email"
+  fi
+}
+
+set_database_url
+
+python manage.py makemigrations
+# Run migrations
+python manage.py migrate
+
+create_superuser
+#
+# Execute DDL statements for the POSTGREST schema
+python manage.py shell <<EOF
+from django.db import connection
+from django.db.utils import ProgrammingError
+# DDL statements
+ddl_statements = '''
+  CREATE ROLE dbt_pgrst NOLOGIN;
+  CREATE ROLE web_anon NOLOGIN;
+  REVOKE ALL ON SCHEMA public FROM dbt_pgrst, web_anon;
+  CREATE VIEW args AS SELECT * FROM analytics_args;
+  CREATE VIEW dbtlogs AS SELECT * FROM analytics_dbtlogs;
+  CREATE VIEW gitrepo AS SELECT * FROM analytics_gitrepo;
+  CREATE VIEW profileyaml AS SELECT * FROM analytics_profileyaml;
+  CREATE VIEW sshkey AS SELECT * FROM analytics_sshkey;
+  CREATE VIEW subprocesslog AS SELECT * FROM analytics_subprocesslog;
+  REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM web_anon;
+  REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public FROM web_anon;
+  REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM web_anon;
+  GRANT ALL ON TABLE args, dbtlogs, gitrepo, profileyaml, sshkey, subprocesslog TO dbt_pgrst;
+'''
+
+# Split the statements and execute non-empty ones
+ddl_statements = ddl_statements.strip().split(';')
+with connection.cursor() as cursor:
+    for statement in ddl_statements:
+        statement = statement.strip()
+        if statement:
+            try:
+                cursor.execute(statement)
+            except ProgrammingError as e:
+                # Check if the error is caused by existing roles
+                error_message = str(e)
+                if 'role' or 'relation' in error_message and 'already exists' in error_message:
+                    # Skip the statement if role already exists
+                    print(f"Skipping statement: {statement} (Role already exists)")
+                else:
+                    # Raise the exception for other errors
+                    raise e
+
+EOF
+python manage.py collectstatic --noinput
+# Start the Django server
+python manage.py runserver_plus 0.0.0.0:8000
