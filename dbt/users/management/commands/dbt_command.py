@@ -45,6 +45,8 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         os.environ["PATH"] += os.pathsep + "/usr/bin"
         os.environ["PATH"] += os.pathsep + "/bin"
+
+        stdout_data = ""
         try:
             dbt_command = options["dbt_command"]
             pk = json.loads(options["pk"].replace("'", '"'))["task_id"]
@@ -104,6 +106,11 @@ class Command(BaseCommand):
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                 )
+                # Read the real-time output from stdout and save it to a variable
+                for line in dbt_result.stdout:
+                    print(line, end="")
+                    stdout_data += line.decode("utf-8")
+
                 dbt_result.wait()
                 os.system("cd {} && git pull origin HEAD".format(EXTERNAL_REPO_PATH))
 
@@ -134,7 +141,7 @@ class Command(BaseCommand):
                     previous_command="this is first commands"
                     if not DBTLogs.objects.all().exists()
                     else DBTLogs.objects.last().command,
-                    dbt_stdout=dbt_result.stdout.read().decode("utf-8"),
+                    dbt_stdout=stdout_data,
                 )
 
                 args = run_results.get("args", {})
@@ -178,4 +185,5 @@ class Command(BaseCommand):
                 else DBTLogs.objects.last().command,
                 success=False,
                 fail_reason=str(err),
+                dbt_stdout=stdout_data
             )
